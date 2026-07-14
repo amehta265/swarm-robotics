@@ -1,0 +1,18 @@
+# Python virtual environment — never commit this
+venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# PyBullet and numpy cache
+*.npy
+*.npz
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
