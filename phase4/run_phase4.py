@@ -50,13 +50,13 @@ p.loadURDF("plane.urdf")
 
 WALNUT_ID = p.loadURDF("a1/a1.urdf",
                         basePosition=[-1.5, 0, 0.35],
-                        useFixedBase=True)
+                        useFixedBase=False)
 HAZEL_ID  = p.loadURDF("a1/a1.urdf",
                         basePosition=[ 1.5, 0, 0.35],
-                        useFixedBase=True)
+                        useFixedBase=False)
 
-target_col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.2)
-target_vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.2,
+target_col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.35)
+target_vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.35,
                                  rgbaColor=[1, 0, 0, 1])
 TARGET_ID  = p.createMultiBody(baseMass=0,
                                 baseCollisionShapeIndex=target_col,
@@ -81,10 +81,23 @@ for xp, yp, hx, hy in [(0, 2.8, 3.0, 0.05),
                       baseVisualShapeIndex=wv,
                       basePosition=[xp, yp, 0.5])
 
+# Disable gravity on robot bases — we control position kinematically
+# Without this, free-base robots fall through the floor each step
+p.changeDynamics(WALNUT_ID, -1, mass=0)  # -1 = base link
+p.changeDynamics(HAZEL_ID,  -1, mass=0)
+
 print(f"World: Walnut={WALNUT_ID} Hazel={HAZEL_ID} Target={TARGET_ID}")
 
 pb_lock    = threading.Lock()
 stop_event = threading.Event()
+
+# Shared desired poses — agent threads write, physics thread applies after stepSimulation
+# This ensures resetBasePositionAndOrientation happens AFTER stepSimulation, not before
+desired_poses = {
+    'walnut': None,
+    'hazel':  None,
+}
+poses_lock = threading.Lock()
 
 STANDING = {1:0.0,  3:0.67, 4:-1.3,
             6:0.0,  8:0.67, 9:-1.3,
@@ -123,6 +136,29 @@ def gait_targets(t, freq=1.0, swing_amp=0.25, lift_amp=0.3):
     }
 
 
+class WaypointNavigator:
+    """
+    Simple deterministic waypoint navigator.
+    Visits a fixed set of waypoints in sequence around the arena.
+    When all waypoints visited, repeats from the start.
+    This guarantees coverage without depending on the pheromone grid
+    being populated first.
+    """
+    def __init__(self, waypoints, arrival_radius=0.4):
+        self.waypoints      = waypoints
+        self.arrival_radius = arrival_radius
+        self.current_idx    = 0
+
+    def update(self, robot_pos):
+        rx, ry = robot_pos[0], robot_pos[1]
+        wx, wy = self.waypoints[self.current_idx]
+        dist = math.sqrt((rx - wx)**2 + (ry - wy)**2)
+        if dist < self.arrival_radius:
+            self.current_idx = (self.current_idx + 1) % len(self.waypoints)
+            wx, wy = self.waypoints[self.current_idx]
+        return (wx, wy)
+
+
 class Agent:
     def __init__(self, name, robot_id, listen_port, send_port, peer_robot_id):
         self.name        = name
@@ -141,9 +177,16 @@ class Agent:
         self.track    = TrackFilter(dt=1/240, q_pos=0.0001, q_vel=0.0005,
                                     r_pos=0.09, init_sigma=0.5,
                                     init_v_sigma=0.8)
-        self.frontier = FrontierNavigator(
-            mu_low=0.1, s2_high=0.7, arrival_radius=0.6
-        )
+        # Waypoint pattern — lawnmower coverage of arena
+        # Offset by pi for each robot so they cover different areas
+        offset = 0 if "walnut" in name else math.pi
+        r = 1.8  # patrol radius
+        n = 8    # number of waypoints
+        self.waypoints = WaypointNavigator([
+            (r * math.cos(2*math.pi*i/n + offset),
+             r * math.sin(2*math.pi*i/n + offset))
+            for i in range(n)
+        ])  # circular patrol, no center waypoint to avoid APF deadlock
         self.apf = APFNavigator(
             k_att=1.0, k_rep=2.0, d0=1.0,
             max_speed=0.3, max_omega=1.5,
@@ -158,7 +201,7 @@ class Agent:
         with pb_lock:
             self.sensors = IRSensorArray(
                 robot_id=robot_id, n_sensors=self.N_SENSORS,
-                radius=0.7, height=0.2, max_range=2.5,
+                radius=0.7, height=0.0, max_range=2.5,
                 noise_std=0.02, target_id=TARGET_ID
             )
 
@@ -197,17 +240,15 @@ class Agent:
         self.rx += vx * dt
         self.ry += vy * dt
 
+
         # Clamp to arena
         self.rx = max(-ARENA_LIMIT, min(ARENA_LIMIT, self.rx))
         self.ry = max(-ARENA_LIMIT, min(ARENA_LIMIT, self.ry))
 
-        # Teleport base to new pose
+        # Write desired pose to shared dict — physics thread applies after stepSimulation
         orn = p.getQuaternionFromEuler([0, 0, self.heading])
-        p.resetBasePositionAndOrientation(
-            self.robot_id,
-            [self.rx, self.ry, 0.35],
-            orn
-        )
+        with poses_lock:
+            desired_poses[self.name] = ([self.rx, self.ry, 0.35], orn)
 
     def run(self):
         DT         = 1/240
@@ -224,18 +265,22 @@ class Agent:
                 break
             t = step * DT
 
-            # Read world state
+            # Read world state — sync kinematic pose to PyBullet BEFORE sensor read
+            # so raycasts originate from the correct world position
             with pb_lock:
+                kin_orn = p.getQuaternionFromEuler([0, 0, self.heading])
+                p.resetBasePositionAndOrientation(
+                    self.robot_id, [self.rx, self.ry, 0.35], kin_orn
+                )
                 _, orn       = p.getBasePositionAndOrientation(self.robot_id)
                 euler        = p.getEulerFromQuaternion(orn)
-                roll, pitch, heading = euler
+                heading      = euler[2]
                 readings     = self.sensors.read_all()
                 true_tpos, _ = p.getBasePositionAndOrientation(TARGET_ID)
                 peer_pos, _  = p.getBasePositionAndOrientation(self.peer_id)
-            
+
             # Use kinematic state as authoritative position
-            # PyBullet's getBasePositionAndOrientation lags behind
-            # our kinematic updates due to threading
+            # PyBullet base position lags due to threading
             pos = (self.rx, self.ry, 0.35)
 
             # Perception
@@ -251,7 +296,7 @@ class Agent:
                 if r["is_target"] and r["distance"] < 2.4:
                     bearing = heading + self.sensor_angles[i]
                     tx_est  = self.rx + r["distance"] * math.cos(bearing)
-                    ty_est  =  + r["distance"] * math.sin(bearing)
+                    ty_est  = self.ry + r["distance"] * math.sin(bearing)
                     self.grid.deposit(tx_est, ty_est, measurement=1.0)
                     self.track.update(tx_est, ty_est)
                     detected = True
@@ -301,24 +346,18 @@ class Agent:
                 self.log["msgs_sent"] += 1
 
             # Navigation - APF with frontier
-            frontier = self.frontier.update(self.grid, (self.rx, self.ry, 0.35))
+            frontier = self.waypoints.update((self.rx, self.ry, 0.35))
             obs_pos  = list(WALL_POSITIONS) + [(peer_pos[0], peer_pos[1])]
             obs_rad  = list(WALL_RADII)     + [0.5]
             vx, vy, omega = self.apf.compute(
                 (self.rx, self.ry, 0.35), heading, frontier, obs_pos, obs_rad
             )
 
-            # DEBUG
-            if step % 240 == 0:
-                speed = math.sqrt(vx**2 + vy**2)
-                print(f"  [{self.name}] vx={vx:.3f} vy={vy:.3f} "
-                      f"speed={speed:.3f} frontier={frontier}")
-
             # Locomotion - Option B
+            # 1. Update kinematic state (writes desired pose to shared dict)
+            self._kinematic_step(vx, vy, omega, DT)
+            # 2. Command leg joints
             with pb_lock:
-                # Move base kinematically first
-                self._kinematic_step(vx, vy, omega, DT)
-                # Animate legs with trot gait
                 targets = gait_targets(t)
                 for idx in revolute_indices:
                     p.setJointMotorControl2(
@@ -381,13 +420,23 @@ def physics_loop():
     DT = 1/240
     while not stop_event.is_set():
         with pb_lock:
-            # Target orbits slowly - hidden at pi offset initially
+            # Move target
             tx = 2.2 * math.cos(0.15 * t + math.pi)
             ty = 2.2 * math.sin(0.15 * t + math.pi)
             p.resetBasePositionAndOrientation(
-                TARGET_ID, [tx, ty, 0.3], [0, 0, 0, 1]
+                TARGET_ID, [tx, ty, 0.55], [0, 0, 0, 1]
             )
             p.stepSimulation()
+            # Apply agent kinematic poses AFTER stepSimulation
+            # so physics engine cannot overwrite our teleports
+            with poses_lock:
+                for name, robot_id in [("walnut", WALNUT_ID),
+                                        ("hazel",  HAZEL_ID)]:
+                    pose = desired_poses.get(name)
+                    if pose is not None:
+                        p.resetBasePositionAndOrientation(
+                            robot_id, pose[0], pose[1]
+                        )
         time.sleep(DT)
         t += DT
 
