@@ -82,9 +82,6 @@ FIXES vs the previous version — read this before tuning anything
       real time. Agents read that clock and integrate with the real
       elapsed sim dt.
 """
-"""
-This should be the final version of this file
-"""
 import time
 import math
 import threading
@@ -135,6 +132,15 @@ PHYS_DT       = 1.0 / 240.0
 CONTROL_HZ    = 60.0        # agent control updates per SIM second
 CONTROL_DT    = 1.0 / CONTROL_HZ
 DURATION      = 120.0       # sim seconds
+
+# ── Flanking ───────────────────────────────────────────────────────
+# Standoff must stay inside DETECT_MAX (2.4m) or the flank point is
+# outside sensor range and the robots lose the thing they're escorting.
+FLANK_RADIUS = 1.5
+# Lead time. The CV model predicts this Lissajous to 0.13m at 2s and
+# 0.29m at 3s, but degrades to 0.80m at 5s — don't push past ~3.
+FLANK_LEAD   = 1.5
+FLANK_SIGN   = {"walnut": +1.0, "hazel": -1.0}
 
 # ── Physics world ──────────────────────────────────────────────────
 p.connect(p.GUI)
@@ -370,6 +376,8 @@ class Agent:
         self.heading     = 0.0 if "walnut" in name else math.pi
         self.mode        = "EXPLORING"
         self.last_info_t = None   # last time the track got real information
+        self.flank_sign   = FLANK_SIGN[name]
+        self._last_flank_theta = None
 
         self.grid = PheromoneGrid(
             width_m=12.0, height_m=12.0, resolution=0.25,
@@ -393,7 +401,7 @@ class Agent:
         # and the robot cannot pass — that was the old d0=1.2 behaviour.
         self.apf = APFNavigator(
             k_att=1.2, k_rep=2.0, d0=0.45, d0_bounds=0.8,
-            max_speed=0.35, max_omega=1.5, rep_cap=2.0,
+            max_speed=0.70, max_omega=1.5, rep_cap=2.0,
             stuck_window=int(2.0 * CONTROL_HZ),   # 2 sim seconds
             stuck_dist=0.05
         )
@@ -472,7 +480,7 @@ class Agent:
           TRACKING      — position variance is low: chase the estimate
           INVESTIGATING — no live track, but the grid remembers a hotspot:
                           go look at it. The grid is a place to SEARCH,
-                          never a measurement to fuse (see fix #3).
+                          never a measurement to fuse (see fix #3)
           EXPLORING     — nothing known: frontier search
         """
         pos_est, _, _ = self.track.get_estimate()
@@ -480,11 +488,11 @@ class Agent:
 
         if self.mode == "TRACKING":
             if pos_est is not None and pos_unc < self.TRACK_LEAVE:
-                return pos_est, "TRACKING"
+                return self._flank_goal(pos_est), "TRACKING"
         elif (pos_est is not None
               and pos_unc < self.TRACK_ENTER
               and self.track.n_updates > self.TRACK_MIN_UPDATES):
-            return pos_est, "TRACKING"
+            return self._flank_goal(pos_est), "TRACKING"
 
         g_est, g_conf, _ = self.grid.best_target_estimate()
         if g_est and g_conf > 0.3:
@@ -495,6 +503,39 @@ class Agent:
             peer_pos=(peer_pos[0], peer_pos[1])
         )
         return goal, "EXPLORING"
+
+    def _flank_goal(self, pos_est):
+        """
+        Standoff point offset perpendicular to the target's estimated
+        direction of travel — Walnut takes the left flank, Hazel the right.
+
+        This is the first thing in the project that actually needs the
+        velocity states of the 4-state filter. Chasing pos_est directly puts
+        both robots on the same bearing (measured: 47deg separation); this
+        holds them roughly opposed (measured: 129deg).
+        """
+        vx, vy = float(self.track.x[2]), float(self.track.x[3])
+        speed = math.hypot(vx, vy)
+
+        if speed < 0.05:
+            # The Lissajous genuinely stalls at its cusps (0.00 m/s at
+            # t=19.63s, 2.5% of the cycle below 0.05). atan2 is meaningless
+            # there, so freeze the last good bearing rather than let both
+            # robots randomly swap sides.
+            theta = (self._last_flank_theta
+                    if self._last_flank_theta is not None
+                    else math.atan2(self.ry - pos_est[1], self.rx - pos_est[0]))
+            ax, ay = pos_est[0], pos_est[1]
+        else:
+            theta = math.atan2(vy, vx) + self.flank_sign * math.pi / 2
+            ax = pos_est[0] + vx * FLANK_LEAD
+            ay = pos_est[1] + vy * FLANK_LEAD
+            self._last_flank_theta = theta
+
+        gx = ax + FLANK_RADIUS * math.cos(theta)
+        gy = ay + FLANK_RADIUS * math.sin(theta)
+        return (max(-ARENA_LIMIT, min(ARENA_LIMIT, gx)),
+                max(-ARENA_LIMIT, min(ARENA_LIMIT, gy)))
 
     def run(self):
         print(f"[{self.name}] starting in forest arena")
@@ -718,7 +759,6 @@ def physics_loop():
         else:
             next_wall = time.perf_counter()   # behind schedule, don't spiral
     stop_event.set()
-
 
 walnut = Agent("walnut", WALNUT_ID, WALNUT_PORT, HAZEL_PORT,
                HAZEL_ID, SPAWNS["walnut"][0], SPAWNS["walnut"][1])
