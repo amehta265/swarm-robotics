@@ -19,6 +19,9 @@ Navigation:
   - No attractive force toward target (unknown until sensor fires)
   - Local minimum escape: random kick after stuck_steps at low speed
 """
+"""
+UPDATE: This uses the waypoint navigator instead of frontier navigator. The waypoint navigator is a simple deterministic navigator that visits a fixed set of waypoints in sequence around the arena. When all waypoints are visited, it repeats from the start. This guarantees coverage without depending on the pheromone grid being populated first.
+"""
 import time
 import math
 import threading
