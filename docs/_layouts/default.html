@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page.title %}{{ page.title }} — {% endif %}{{ site.title }}</title>
+  <meta name="description" content="{{ page.description | default: site.description }}">
+  <meta name="color-scheme" content="light dark">
+
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('sr-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters:[
+      {left:'$$',right:'$$',display:true},
+      {left:'\\[',right:'\\]',display:true},
+      {left:'$',right:'$',display:false},
+      {left:'\\(',right:'\\)',display:false}
+    ], throwOnError:false});"></script>
+</head>
+<body>
+
+<button class="nav-toggle" aria-label="Open navigation">Menu</button>
+<div class="scrim"></div>
+
+<div class="wrap">
+
+  <nav class="sidebar">
+    <a class="brand" href="{{ '/' | relative_url }}">
+      <span class="brand-title">Swarm Robotics</span>
+      <span class="brand-sub">Search and Rescue</span>
+    </a>
+    <ul class="nav-list">
+      {% for item in site.nav %}
+        <li><a href="{{ item.url | relative_url }}" {% if page.url == item.url %}class="current"{% endif %}>{{ item.title }}</a></li>
+      {% endfor %}
+    </ul>
+    <div class="sidebar-foot">
+      <button class="theme-toggle" type="button" aria-label="Switch colour theme">
+        <span class="ico" aria-hidden="true">◐</span>
+        <span class="label">Theme: system</span>
+      </button>
+      <p style="margin-top:12px">Notes written in ASD-STE100 Simplified Technical English.</p>
+    </div>
+  </nav>
+
+  <main class="content">
+    {% if page.title %}
+    <header class="page-head">
+      {% if page.eyebrow %}<p class="eyebrow">{{ page.eyebrow }}</p>{% endif %}
+      <h1>{{ page.title }}</h1>
+      {% if page.subtitle %}<p class="subtitle">{{ page.subtitle }}</p>{% endif %}
+    </header>
+    {% endif %}
+
+    <article class="prose">
+      {{ content }}
+    </article>
+
+    <footer class="page-foot">
+      <p>{{ site.title }} · {{ site.author }}</p>
+    </footer>
+  </main>
+
+</div>
+
+<script>
+(function () {
+
+  /* ---------- Mobile navigation ---------- */
+  var navBtn = document.querySelector('.nav-toggle');
+  var sidebar = document.querySelector('.sidebar');
+  var scrim = document.querySelector('.scrim');
+  function closeNav() { sidebar.classList.remove('open'); scrim.classList.remove('show'); }
+  if (navBtn) {
+    navBtn.addEventListener('click', function () {
+      sidebar.classList.toggle('open');
+      scrim.classList.toggle('show');
+    });
+  }
+  if (scrim) scrim.addEventListener('click', closeNav);
+
+  /* ---------- Theme toggle: system -> light -> dark -> system ---------- */
+  var themeBtn = document.querySelector('.theme-toggle');
+  var ICONS = { system: '◐', light: '☀', dark: '☾' };
+  var LABELS = { system: 'Theme: system', light: 'Theme: light', dark: 'Theme: dark' };
+  var ORDER = ['system', 'light', 'dark'];
+
+  function currentTheme() {
+    var t = document.documentElement.getAttribute('data-theme');
+    return (t === 'light' || t === 'dark') ? t : 'system';
+  }
+  function paintButton() {
+    if (!themeBtn) return;
+    var t = currentTheme();
+    themeBtn.querySelector('.ico').textContent = ICONS[t];
+    themeBtn.querySelector('.label').textContent = LABELS[t];
+  }
+  function applyTheme(t) {
+    if (t === 'system') {
+      document.documentElement.removeAttribute('data-theme');
+      try { localStorage.removeItem('sr-theme'); } catch (e) {}
+    } else {
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem('sr-theme', t); } catch (e) {}
+    }
+    paintButton();
+  }
+  if (themeBtn) {
+    paintButton();
+    themeBtn.addEventListener('click', function () {
+      var next = ORDER[(ORDER.indexOf(currentTheme()) + 1) % ORDER.length];
+      applyTheme(next);
+    });
+  }
+
+  /* ---------- Tabs ----------
+     A page opts in by placing marker divs in its Markdown. Each marker
+     carries the class "tabmark" and a data-tab attribute holding the tab
+     label. Everything between one marker and the next becomes one panel.
+     Pages with fewer than two markers are left untouched. */
+
+  var article = document.querySelector('.prose');
+  if (!article) return;
+  var marks = article.querySelectorAll('.tabmark');
+  if (marks.length < 2) return;
+
+  var nodes = Array.prototype.slice.call(article.childNodes);
+  var groups = [];
+  var current = null;
+
+  nodes.forEach(function (node) {
+    if (node.nodeType === 1 && node.classList.contains('tabmark')) {
+      current = { title: node.getAttribute('data-tab') || 'Section', nodes: [] };
+      groups.push(current);
+      return;
+    }
+    if (!current) {
+      if (node.nodeType === 3 && !node.textContent.trim()) return;
+      return;
+    }
+    current.nodes.push(node);
+  });
+
+  if (groups.length < 2) return;
+
+  var slug = function (s) {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  };
+
+  var bar = document.createElement('div');
+  bar.className = 'tabbar';
+  bar.setAttribute('role', 'tablist');
+
+  var panels = [];
+
+  groups.forEach(function (g, i) {
+    var id = slug(g.title);
+
+    var btn = document.createElement('button');
+    btn.className = 'tabbtn';
+    btn.type = 'button';
+    btn.textContent = g.title;
+    btn.id = 'tab-' + id;
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-controls', 'panel-' + id);
+    btn.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+    btn.dataset.index = i;
+    btn.dataset.slug = id;
+    bar.appendChild(btn);
+
+    var panel = document.createElement('section');
+    panel.className = 'tabpanel';
+    panel.id = 'panel-' + id;
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', 'tab-' + id);
+    panel.dataset.slug = id;
+    g.nodes.forEach(function (n) { panel.appendChild(n); });
+    if (i !== 0) panel.hidden = true;
+    panels.push(panel);
+  });
+
+  article.innerHTML = '';
+  article.appendChild(bar);
+  panels.forEach(function (p) { article.appendChild(p); });
+
+  /* Previous / next control at the foot of each panel */
+  panels.forEach(function (panel, i) {
+    var nav = document.createElement('div');
+    nav.className = 'tabnav';
+    var prev = document.createElement('button');
+    prev.type = 'button';
+    prev.textContent = i > 0 ? '← ' + groups[i - 1].title : '←';
+    prev.disabled = i === 0;
+    prev.addEventListener('click', function () { select(i - 1, true); });
+    var next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = i < panels.length - 1 ? groups[i + 1].title + ' →' : '→';
+    next.disabled = i === panels.length - 1;
+    next.addEventListener('click', function () { select(i + 1, true); });
+    nav.appendChild(prev);
+    nav.appendChild(next);
+    panel.appendChild(nav);
+  });
+
+  var buttons = Array.prototype.slice.call(bar.querySelectorAll('.tabbtn'));
+
+  function select(i, scroll) {
+    if (i < 0 || i >= panels.length) return;
+    buttons.forEach(function (b, j) { b.setAttribute('aria-selected', j === i ? 'true' : 'false'); });
+    panels.forEach(function (p, j) { p.hidden = j !== i; });
+    if (history.replaceState) history.replaceState(null, '', '#' + buttons[i].dataset.slug);
+    if (scroll) {
+      var top = document.querySelector('.page-head');
+      if (top) window.scrollTo({ top: top.offsetTop - 8, behavior: 'smooth' });
+    }
+  }
+
+  buttons.forEach(function (b, i) {
+    b.addEventListener('click', function () { select(i, false); });
+    b.addEventListener('keydown', function (e) {
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      var n = (i + d + buttons.length) % buttons.length;
+      buttons[n].focus();
+      select(n, false);
+    });
+  });
+
+  /* Open the tab named in the URL hash, if there is one */
+  var hash = decodeURIComponent(location.hash.replace('#', ''));
+  if (hash) {
+    var idx = buttons.map(function (b) { return b.dataset.slug; }).indexOf(hash);
+    if (idx >= 0) select(idx, false);
+  }
+
+})();
+</script>
+
+</body>
+</html>

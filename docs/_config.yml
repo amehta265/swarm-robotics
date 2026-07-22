@@ -1,0 +1,42 @@
+title: Swarm Robotics — Search and Rescue
+description: Build notes for a decentralized two-robot search and rescue system in PyBullet.
+author: Ankit Mehta
+
+# Set this to your repository name. If you publish to <username>.github.io
+# instead of <username>.github.io/swarm_robotics, set baseurl to "".
+baseurl: "/swarm-robotics"
+url: ""
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  math_engine: null
+
+plugins:
+  - jekyll-seo-tag
+
+# Order of the pages in the sidebar navigation.
+nav:
+  - title: Overview
+    url: /
+  - title: Phase 0 — Dynamics
+    url: /phase-0/
+  - title: Phase 1 — Control
+    url: /phase-1/
+  - title: Phase 2 — Perception
+    url: /phase-2/
+  - title: Phase 3 — Communication
+    url: /phase-3/
+  - title: Phase 4 — Navigation
+    url: /phase-4/
+  - title: Phase 5 & 6 — Planned
+    url: /phase-5/
+  - title: Glossary
+    url: /glossary/
+
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor

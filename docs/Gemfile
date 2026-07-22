@@ -1,0 +1,10 @@
+source "https://rubygems.org"
+
+# Matches the gem set that GitHub Pages runs. Use this for local preview only.
+gem "github-pages", group: :jekyll_plugins
+
+gem "webrick", "~> 1.8"
+
+group :jekyll_plugins do
+  gem "jekyll-seo-tag"
+end
